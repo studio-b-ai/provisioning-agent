@@ -27,6 +27,18 @@ export const config = {
   hubspotApiKey: process.env.HUBSPOT_API_KEY ?? "",
   hubspotPortalId: process.env.HUBSPOT_PORTAL_ID ?? "49070660",
 
+  // Acumatica
+  acumaticaUrl: process.env.ACUMATICA_URL ?? "https://heritagefabrics.acumatica.com",
+  acumaticaUsername: process.env.ACUMATICA_USERNAME ?? "",
+  acumaticaPassword: process.env.ACUMATICA_PASSWORD ?? "",
+  acumaticaTenant: process.env.ACUMATICA_TENANT ?? "",
+  acumaticaBranchId: process.env.ACUMATICA_BRANCH_ID ?? "HERFAB",
+
+  // Zoom (Server-to-Server OAuth)
+  zoomAccountId: process.env.ZOOM_ACCOUNT_ID ?? "",
+  zoomClientId: process.env.ZOOM_CLIENT_ID ?? "",
+  zoomClientSecret: process.env.ZOOM_CLIENT_SECRET ?? "",
+
   // Jamf (future)
   jamfUrl: process.env.JAMF_URL ?? "",
   jamfApiKey: process.env.JAMF_API_KEY ?? "",

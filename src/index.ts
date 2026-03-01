@@ -6,6 +6,8 @@ import * as graph from "./lib/graph.js";
 import * as github from "./lib/github-org.js";
 import * as slack from "./lib/slack.js";
 import * as hubspot from "./lib/hubspot.js";
+import * as acumatica from "./lib/acumatica.js";
+import * as zoom from "./lib/zoom.js";
 import { runOnboarding } from "./workflows/onboarding.js";
 import { runOffboarding } from "./workflows/offboarding.js";
 import type { ProvisioningRequest } from "./types.js";
@@ -44,6 +46,12 @@ app.get("/health", async () => {
 
   // Check HubSpot
   checks.hubspot = hubspot.isConfigured() ? "configured" : "not configured";
+
+  // Check Acumatica
+  checks.acumatica = acumatica.isConfigured() ? "configured" : "not configured";
+
+  // Check Zoom
+  checks.zoom = zoom.isConfigured() ? "configured" : "not configured";
 
   return checks;
 });
@@ -108,9 +116,14 @@ app.post<{
     lastName: body.lastName,
     department: body.department,
     jobTitle: body.jobTitle,
+    phone: body.phone,
     githubUsername: body.githubUsername,
     githubTeams: body.githubTeams,
     slackChannels: body.slackChannels,
+    acumaticaBranchId: body.acumaticaBranchId,
+    acumaticaEmployeeClass: body.acumaticaEmployeeClass,
+    acumaticaEmployeeId: body.acumaticaEmployeeId,
+    zoomCallingPlanId: body.zoomCallingPlanId,
     triggerSource: body.triggerSource ?? "manual",
   };
 
