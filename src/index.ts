@@ -15,6 +15,36 @@ import type { ProvisioningRequest } from "./types.js";
 const logger = pino({ level: config.logLevel });
 const app = Fastify({ logger: false });
 
+// ─── Bearer Token Auth ──────────────────────────────────────────────
+
+function validateBearerToken(
+  request: { headers: Record<string, string | string[] | undefined> },
+  reply: { code: (n: number) => { send: (body: unknown) => void } }
+): boolean {
+  if (!config.provisionApiKey) {
+    logger.warn("PROVISION_API_KEY not set — all authenticated endpoints are BLOCKED");
+    reply.code(503).send({
+      error: "Service not configured",
+      detail: "PROVISION_API_KEY environment variable is not set. All provisioning endpoints are disabled until a key is configured.",
+    });
+    return false;
+  }
+
+  const authHeader = request.headers.authorization;
+  if (!authHeader || typeof authHeader !== "string") {
+    reply.code(401).send({ error: "Missing Authorization header" });
+    return false;
+  }
+
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!match || match[1] !== config.provisionApiKey) {
+    reply.code(403).send({ error: "Invalid API key" });
+    return false;
+  }
+
+  return true;
+}
+
 // ─── Health Check ────────────────────────────────────────────────────
 
 app.get("/health", async () => {
@@ -102,7 +132,9 @@ app.get("/metrics", async () => {
 
 app.post<{
   Body: ProvisioningRequest;
-}>("/provision", async (request) => {
+}>("/provision", async (request, reply) => {
+  if (!validateBearerToken(request, reply)) return;
+
   const body = request.body;
 
   if (!body?.userEmail || !body?.firstName || !body?.lastName) {
@@ -145,7 +177,9 @@ app.post<{
 
 // ─── HubSpot Webhook Receiver ───────────────────────────────────────
 
-app.post("/webhook/hubspot", async (request) => {
+app.post("/webhook/hubspot", async (request, reply) => {
+  if (!validateBearerToken(request, reply)) return;
+
   // HubSpot ticket webhook handler
   // Triggers onboarding/offboarding when tickets are created with specific pipeline/stage
   const body = request.body as Array<Record<string, unknown>> | Record<string, unknown>;
