@@ -1,9 +1,9 @@
 /**
- * HubSpot Callback Module â Updates Employee Onboarding tickets
+ * HubSpot Callback Module — Updates Employee Onboarding & Offboarding tickets
  * with provisioning results from the provisioning-agent.
  *
  * Responsibilities:
- *   1. Update ticket stage (Requested â Provisioning â Accounts Created / Failed)
+ *   1. Update ticket stage based on pipeline type
  *   2. Set provisioning_status + provisioning_run_id on the ticket
  *   3. Add a timeline note summarising step outcomes
  *   4. Move ticket to "Complete" or "Failed" stage based on result
@@ -16,11 +16,17 @@ const logger = pino({ level: config.logLevel });
 
 const API_BASE = "https://api.hubapi.com";
 
-// âââ Pipeline Stage IDs (Employee Onboarding pipeline 876698717) ââââââââ
+// ─── Pipeline IDs ───────────────────────────────────────────────────
 
-export const PIPELINE_ID = "876698717";
+export const ONBOARDING_PIPELINE_ID = "876698717";
+export const OFFBOARDING_PIPELINE_ID = "876705376";
 
-export const STAGES = {
+/** @deprecated Use ONBOARDING_PIPELINE_ID instead */
+export const PIPELINE_ID = ONBOARDING_PIPELINE_ID;
+
+// ─── Onboarding Stage IDs ───────────────────────────────────────────
+
+export const ONBOARDING_STAGES = {
   REQUESTED: "1314110372",
   APPROVED: "1314110373",
   PROVISIONING: "1314110374",
@@ -30,7 +36,34 @@ export const STAGES = {
   FAILED: "1314110040",
 } as const;
 
-// âââ Types ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+/** @deprecated Use ONBOARDING_STAGES instead */
+export const STAGES = ONBOARDING_STAGES;
+
+// ─── Offboarding Stage IDs ──────────────────────────────────────────
+
+export const OFFBOARDING_STAGES = {
+  REQUESTED: "1314110858",
+  APPROVED: "1314110859",
+  DEPROVISIONING: "1314110860",
+  ACCOUNTS_DISABLED: "1314110867",
+  HARDWARE_RECOVERY: "1314110868",
+  COMPLETE: "1314110861",
+  FAILED: "1314110869",
+} as const;
+
+// ─── Pipeline Type ──────────────────────────────────────────────────
+
+export type PipelineType = "onboarding" | "offboarding";
+
+export function getPipelineId(type: PipelineType): string {
+  return type === "offboarding" ? OFFBOARDING_PIPELINE_ID : ONBOARDING_PIPELINE_ID;
+}
+
+export function detectPipelineType(pipelineId: string): PipelineType {
+  return pipelineId === OFFBOARDING_PIPELINE_ID ? "offboarding" : "onboarding";
+}
+
+// ─── Types ──────────────────────────────────────────────────────────────
 
 export interface TicketUpdateResult {
   ticketId: string;
@@ -54,12 +87,13 @@ export interface ProvisioningOutcome {
   ticketId: string;
   employeeEmail: string;
   employeeName: string;
+  pipelineType?: PipelineType;
   status: "success" | "partial" | "failed";
   steps: StepOutcome[];
   totalDurationMs: number;
 }
 
-// âââ Internal helpers âââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ─── Internal helpers ───────────────────────────────────────────────────
 
 function getToken(): string {
   return config.hubspotApiKey;
@@ -96,30 +130,43 @@ async function hubspotFetch(
   return res.json();
 }
 
-// âââ Stage mapping ââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ─── Stage mapping ──────────────────────────────────────────────────────
 
 function stageForStatus(
-  status: "success" | "partial" | "failed"
+  status: "success" | "partial" | "failed",
+  pipelineType: PipelineType = "onboarding"
 ): string {
+  if (pipelineType === "offboarding") {
+    switch (status) {
+      case "success":
+        return OFFBOARDING_STAGES.ACCOUNTS_DISABLED;
+      case "partial":
+        return OFFBOARDING_STAGES.ACCOUNTS_DISABLED; // still disabled, some optional steps failed
+      case "failed":
+        return OFFBOARDING_STAGES.FAILED;
+    }
+  }
+
   switch (status) {
     case "success":
-      return STAGES.ACCOUNTS_CREATED;
+      return ONBOARDING_STAGES.ACCOUNTS_CREATED;
     case "partial":
-      return STAGES.ACCOUNTS_CREATED; // still created, just some optional steps failed
+      return ONBOARDING_STAGES.ACCOUNTS_CREATED; // still created, just some optional steps failed
     case "failed":
-      return STAGES.FAILED;
+      return ONBOARDING_STAGES.FAILED;
   }
 }
 
-// âââ Build timeline note ââââââââââââââââââââââââââââââââââââââââââââââââ
+// ─── Build timeline note ────────────────────────────────────────────────
 
 function buildNote(outcome: ProvisioningOutcome): string {
+  const verb = outcome.pipelineType === "offboarding" ? "Deprovisioning" : "Provisioning";
   const header =
     outcome.status === "success"
-      ? `â Provisioning COMPLETE for ${outcome.employeeName}`
+      ? `✅ ${verb} COMPLETE for ${outcome.employeeName}`
       : outcome.status === "partial"
-        ? `â ï¸ Provisioning PARTIAL for ${outcome.employeeName}`
-        : `â Provisioning FAILED for ${outcome.employeeName}`;
+        ? `⚠️ ${verb} PARTIAL for ${outcome.employeeName}`
+        : `❌ ${verb} FAILED for ${outcome.employeeName}`;
 
   const lines = [
     header,
@@ -129,10 +176,10 @@ function buildNote(outcome: ProvisioningOutcome): string {
     "",
     "Step Results:",
     ...outcome.steps.map((s) => {
-      const icon = s.success ? "â" : "â";
+      const icon = s.success ? "✅" : "❌";
       const dry = s.dryRun ? " [DRY RUN]" : "";
       const dur = s.durationMs ? ` (${s.durationMs}ms)` : "";
-      const err = s.error ? ` â ${s.error}` : "";
+      const err = s.error ? ` — ${s.error}` : "";
       return `  ${icon} ${s.name}${dry}${dur}${err}`;
     }),
   ];
@@ -140,7 +187,7 @@ function buildNote(outcome: ProvisioningOutcome): string {
   return lines.join("\n");
 }
 
-// âââ Public API âââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ─── Public API ─────────────────────────────────────────────────────────
 
 /**
  * Check if callback functionality is configured
@@ -151,20 +198,27 @@ export function isConfigured(): boolean {
 }
 
 /**
- * Move a ticket to the "Provisioning" stage (called when workflow starts)
+ * Move a ticket to the "Provisioning" / "Deprovisioning" stage (called when workflow starts)
  */
 export async function markProvisioning(
   ticketId: string,
-  runId: number
+  runId: number,
+  pipelineType: PipelineType = "onboarding"
 ): Promise<TicketUpdateResult> {
+  const pipelineId = getPipelineId(pipelineType);
+  const activeStage =
+    pipelineType === "offboarding"
+      ? OFFBOARDING_STAGES.DEPROVISIONING
+      : ONBOARDING_STAGES.PROVISIONING;
+
   if (config.dryRun) {
     logger.info(
-      { ticketId, runId, dryRun: true },
-      "[DRY RUN] Would mark ticket as Provisioning"
+      { ticketId, runId, pipelineType, dryRun: true },
+      `[DRY RUN] Would mark ticket as ${pipelineType === "offboarding" ? "Deprovisioning" : "Provisioning"}`
     );
     return {
       ticketId,
-      stage: STAGES.PROVISIONING,
+      stage: activeStage,
       provisioningStatus: "running",
     };
   }
@@ -172,27 +226,27 @@ export async function markProvisioning(
   try {
     await hubspotFetch("PATCH", `/crm/v3/objects/tickets/${ticketId}`, {
       properties: {
-        hs_pipeline: PIPELINE_ID,
-        hs_pipeline_stage: STAGES.PROVISIONING,
+        hs_pipeline: pipelineId,
+        hs_pipeline_stage: activeStage,
         provisioning_status: "running",
         provisioning_run_id: String(runId),
       },
     });
 
     logger.info(
-      { ticketId, runId },
-      "Ticket moved to Provisioning stage"
+      { ticketId, runId, pipelineType },
+      `Ticket moved to ${pipelineType === "offboarding" ? "Deprovisioning" : "Provisioning"} stage`
     );
 
     return {
       ticketId,
-      stage: STAGES.PROVISIONING,
+      stage: activeStage,
       provisioningStatus: "running",
     };
   } catch (err) {
     logger.error(
-      { err, ticketId, runId },
-      "Failed to mark ticket as Provisioning"
+      { err, ticketId, runId, pipelineType },
+      "Failed to mark ticket as Provisioning/Deprovisioning"
     );
     return {
       ticketId,
@@ -210,8 +264,8 @@ export async function markProvisioning(
 export async function reportOutcome(
   outcome: ProvisioningOutcome
 ): Promise<TicketUpdateResult> {
-  const { ticketId, runId, status } = outcome;
-  const targetStage = stageForStatus(status);
+  const { ticketId, runId, status, pipelineType = "onboarding" } = outcome;
+  const targetStage = stageForStatus(status, pipelineType);
 
   if (config.dryRun) {
     logger.info(
@@ -272,7 +326,7 @@ export async function reportOutcome(
         "Provisioning note added to ticket"
       );
     } catch (noteErr) {
-      // Note creation is non-critical â log but don't fail the callback
+      // Note creation is non-critical — log but don't fail the callback
       logger.warn(
         { err: noteErr, ticketId },
         "Failed to add provisioning note (non-critical)"
@@ -302,10 +356,18 @@ export async function reportOutcome(
 /**
  * Move ticket to Complete stage (final step after hardware etc.)
  */
-export async function markComplete(ticketId: string): Promise<boolean> {
+export async function markComplete(
+  ticketId: string,
+  pipelineType: PipelineType = "onboarding"
+): Promise<boolean> {
+  const completeStage =
+    pipelineType === "offboarding"
+      ? OFFBOARDING_STAGES.COMPLETE
+      : ONBOARDING_STAGES.COMPLETE;
+
   if (config.dryRun) {
     logger.info(
-      { ticketId, dryRun: true },
+      { ticketId, pipelineType, dryRun: true },
       "[DRY RUN] Would mark ticket as Complete"
     );
     return true;
@@ -314,13 +376,13 @@ export async function markComplete(ticketId: string): Promise<boolean> {
   try {
     await hubspotFetch("PATCH", `/crm/v3/objects/tickets/${ticketId}`, {
       properties: {
-        hs_pipeline_stage: STAGES.COMPLETE,
+        hs_pipeline_stage: completeStage,
       },
     });
-    logger.info({ ticketId }, "Ticket marked Complete");
+    logger.info({ ticketId, pipelineType }, "Ticket marked Complete");
     return true;
   } catch (err) {
-    logger.error({ err, ticketId }, "Failed to mark ticket Complete");
+    logger.error({ err, ticketId, pipelineType }, "Failed to mark ticket Complete");
     return false;
   }
 }
@@ -338,15 +400,24 @@ export async function getTicket(
       `/crm/v3/objects/tickets/${ticketId}?properties=` +
         [
           "subject",
+          "hs_pipeline",
           "hs_pipeline_stage",
+          // Shared employee fields
           "employee_email",
           "employee_first_name",
           "employee_last_name",
           "employee_department",
           "employee_job_title",
-          "employee_start_date",
           "employee_phone",
           "employee_github_username",
+          // Onboarding-specific
+          "employee_start_date",
+          // Offboarding-specific
+          "offboarding_reason",
+          "employee_last_day",
+          "forwarding_email",
+          "offboarding_type",
+          // Provisioning tracking
           "provisioning_run_id",
           "provisioning_status",
         ].join(",")
