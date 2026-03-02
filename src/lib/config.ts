@@ -42,4 +42,9 @@ export const config = {
   // Jamf (future)
   jamfUrl: process.env.JAMF_URL ?? "",
   jamfApiKey: process.env.JAMF_API_KEY ?? "",
+
+    // API Authentication
+    // Required for /provision and /webhook/hubspot endpoints
+    provisionApiKey: process.env.PROVISION_API_KEY ?? "",
 } as const;
+
