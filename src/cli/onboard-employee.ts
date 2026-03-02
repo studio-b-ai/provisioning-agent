@@ -58,6 +58,9 @@ const { values: args } = parseArgs({
       type: "string",
       default: "https://provisioning-agent-production.up.railway.app",
     },
+    "api-key": {
+      type: "string",
+    },
     local: { type: "boolean", default: false },
 
     help: { type: "boolean", short: "h", default: false },
@@ -111,6 +114,7 @@ CONFIG:
 EXECUTION:
   --live              Execute real API calls (default: DRY_RUN)
   --service-url <url> Provisioning agent URL (default: Railway prod)
+  --api-key <key>     Bearer token for /provision endpoint (or set PROVISION_API_KEY env var)
   --local             Run workflow locally instead of via HTTP
 
 EXAMPLES:
@@ -220,6 +224,13 @@ async function executeRemote(
   const isLive = args.live ?? false;
   const mode = isLive ? "LIVE" : "DRY RUN";
 
+  // Resolve API key: --api-key flag > PROVISION_API_KEY env var
+  const apiKey = str(args["api-key"]) ?? process.env.PROVISION_API_KEY ?? "";
+  if (!apiKey) {
+    console.error("❌ No API key provided. Use --api-key <key> or set PROVISION_API_KEY env var.");
+    process.exit(1);
+  }
+
   console.log(`\n🚀 ${workflowType.toUpperCase()} [${mode}]`);
   console.log(`   Employee: ${emp.firstName} ${emp.lastName} <${emp.email}>`);
   console.log(`   Target:   ${serviceUrl}`);
@@ -246,7 +257,10 @@ async function executeRemote(
   try {
     const res = await fetch(`${serviceUrl}/provision`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
       body: JSON.stringify(payload),
     });
 
