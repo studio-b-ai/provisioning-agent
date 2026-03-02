@@ -12,19 +12,19 @@ import * as zoom from "./lib/zoom.js";
 import { runOnboarding } from "./workflows/onboarding.js";
 import { runOffboarding } from "./workflows/offboarding.js";
 import type { ProvisioningRequest, WorkflowResult } from "./types.js";
-import type { ProvisioningOutcome, StepOutcome } from "./lib/hubspot-callback.js";
+import type { ProvisioningOutcome, StepOutcome, PipelineType } from "./lib/hubspot-callback.js";
 
 const logger = pino({ level: config.logLevel });
 const app = Fastify({ logger: false });
 
-// âââ Bearer Token Auth ââââââââââââââââââââââââââââââââââââââââââââââ
+// ─── Bearer Token Auth ──────────────────────────────────────────────
 
 function validateBearerToken(
   request: { headers: Record<string, string | string[] | undefined> },
   reply: { code: (n: number) => { send: (body: unknown) => void } }
 ): boolean {
   if (!config.provisionApiKey) {
-    logger.warn("PROVISION_API_KEY not set â all authenticated endpoints are BLOCKED");
+    logger.warn("PROVISION_API_KEY not set — all authenticated endpoints are BLOCKED");
     reply.code(503).send({
       error: "Service not configured",
       detail: "PROVISION_API_KEY environment variable is not set. All provisioning endpoints are disabled until a key is configured.",
@@ -47,7 +47,7 @@ function validateBearerToken(
   return true;
 }
 
-// âââ Health Check ââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ─── Health Check ────────────────────────────────────────────────────
 
 app.get("/health", async () => {
   const checks: Record<string, string> = {
@@ -91,7 +91,7 @@ app.get("/health", async () => {
   return checks;
 });
 
-// âââ Metrics âââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ─── Metrics ─────────────────────────────────────────────────────────
 
 app.get("/metrics", async () => {
   try {
@@ -133,7 +133,7 @@ app.get("/metrics", async () => {
   }
 });
 
-// âââ Manual Trigger âââââââââââââââââââââââââââââââââââââââââââââââââ
+// ─── Manual Trigger ─────────────────────────────────────────────────
 
 app.post<{
   Body: ProvisioningRequest;
@@ -180,19 +180,21 @@ app.post<{
   return { error: `Unknown workflow type: ${req.workflowType}` };
 });
 
-// âââ Helper: Map WorkflowResult â ProvisioningOutcome ââââââââââââââ
+// ─── Helper: Map WorkflowResult → ProvisioningOutcome ──────────────
 
 function toProvisioningOutcome(
   ticketId: string,
   employeeEmail: string,
   employeeName: string,
-  result: WorkflowResult
+  result: WorkflowResult,
+  pipelineType: PipelineType = "onboarding"
 ): ProvisioningOutcome {
   return {
     runId: result.runId,
     ticketId,
     employeeEmail,
     employeeName,
+    pipelineType,
     status: result.success
       ? "success"
       : result.steps.some((s) => s.status === "success" || s.status === "dry_run")
@@ -209,7 +211,7 @@ function toProvisioningOutcome(
   };
 }
 
-// âââ HubSpot Webhook Receiver âââââââââââââââââââââââââââââââââââââââ
+// ─── HubSpot Webhook Receiver ───────────────────────────────────────
 
 app.post("/webhook/hubspot", async (request, reply) => {
   if (!validateBearerToken(request, reply)) return;
@@ -217,7 +219,7 @@ app.post("/webhook/hubspot", async (request, reply) => {
   if (!hubspotCallback.isConfigured()) {
     return {
       error: "HubSpot callback not configured",
-      detail: "HUBSPOT_API_KEY not set â ticket pipeline callbacks disabled",
+      detail: "HUBSPOT_API_KEY not set — ticket pipeline callbacks disabled",
     };
   }
 
@@ -231,14 +233,26 @@ app.post("/webhook/hubspot", async (request, reply) => {
     return { error: "Missing ticketId or objectId in webhook payload" };
   }
 
-  logger.info({ ticketId }, "HubSpot onboarding webhook received");
+  logger.info({ ticketId }, "HubSpot webhook received");
 
-  // 1. Fetch ticket to extract employee details
+  // 1. Fetch ticket to extract employee details + detect pipeline type
   const ticket = await hubspotCallback.getTicket(ticketId);
   if (!ticket) {
-    logger.error({ ticketId }, "Could not fetch ticket â aborting");
+    logger.error({ ticketId }, "Could not fetch ticket — aborting");
     return { error: "Failed to fetch ticket", ticketId };
   }
+
+  // Detect whether this is onboarding or offboarding based on the pipeline ID
+  const pipelineType: PipelineType = hubspotCallback.detectPipelineType(
+    ticket.hs_pipeline ?? ""
+  );
+  const isOffboarding = pipelineType === "offboarding";
+  const verb = isOffboarding ? "Deprovisioning" : "Provisioning";
+
+  logger.info(
+    { ticketId, pipelineType, pipelineId: ticket.hs_pipeline },
+    `Detected ${pipelineType} pipeline`
+  );
 
   const employeeEmail = ticket.employee_email;
   const firstName = ticket.employee_first_name;
@@ -260,7 +274,7 @@ app.post("/webhook/hubspot", async (request, reply) => {
 
   // 2. Build ProvisioningRequest from ticket properties
   const req: ProvisioningRequest = {
-    workflowType: "onboarding",
+    workflowType: isOffboarding ? "offboarding" : "onboarding",
     userEmail: employeeEmail,
     firstName,
     lastName,
@@ -271,23 +285,29 @@ app.post("/webhook/hubspot", async (request, reply) => {
     triggerSource: "webhook",
   };
 
-  // 3. Mark ticket as "Provisioning" (non-blocking â don't fail if this errors)
-  let runIdForCallback = 0;
+  // 3. Mark ticket as "Provisioning" / "Deprovisioning" (non-blocking)
   try {
-    // We don't have runId yet, pass 0 â will update after workflow starts
-    await hubspotCallback.markProvisioning(ticketId, 0);
+    await hubspotCallback.markProvisioning(ticketId, 0, pipelineType);
   } catch (err) {
-    logger.warn({ err, ticketId }, "Failed to mark ticket as Provisioning (non-critical)");
+    logger.warn({ err, ticketId }, `Failed to mark ticket as ${verb} (non-critical)`);
   }
 
-  // 4. Notify Slack that provisioning is starting
+  // 4. Notify Slack that provisioning/deprovisioning is starting
   try {
     const dryTag = config.dryRun ? " [DRY RUN]" : "";
+    const emoji = isOffboarding ? "🔴" : "🔄";
     await slack.postMessage(
       config.slackDeploymentsChannel,
-      `ð *Provisioning started*${dryTag}\n` +
+      `${emoji} *${verb} started*${dryTag}\n` +
         `Employee: *${employeeName}* (${employeeEmail})\n` +
         `HubSpot Ticket: #${ticketId}\n` +
+        (isOffboarding && ticket.offboarding_reason
+          ? `Reason: ${ticket.offboarding_reason}` +
+            (ticket.offboarding_type ? ` (${ticket.offboarding_type})` : "") + "\n"
+          : "") +
+        (isOffboarding && ticket.employee_last_day
+          ? `Last Day: ${ticket.employee_last_day}\n`
+          : "") +
         `Trigger: HubSpot webhook`,
       config.dryRun
     );
@@ -295,47 +315,47 @@ app.post("/webhook/hubspot", async (request, reply) => {
     logger.warn({ err, ticketId }, "Failed to post Slack start notification (non-critical)");
   }
 
-  // 5. Run onboarding workflow
+  // 5. Run onboarding or offboarding workflow
   logger.info(
-    { ticketId, email: employeeEmail, dryRun: config.dryRun },
-    "Starting onboarding from HubSpot webhook"
+    { ticketId, email: employeeEmail, pipelineType, dryRun: config.dryRun },
+    `Starting ${pipelineType} from HubSpot webhook`
   );
 
-  const result = await runOnboarding(req);
-  runIdForCallback = result.runId;
+  const result = isOffboarding
+    ? await runOffboarding(req)
+    : await runOnboarding(req);
 
-  // 6. Update run ID on ticket (now that we have it)
-  // This is done as part of reportOutcome below
-
-  // 7. Report outcome back to ticket
-  const outcome = toProvisioningOutcome(ticketId, employeeEmail, employeeName, result);
+  // 6. Report outcome back to ticket
+  const outcome = toProvisioningOutcome(
+    ticketId, employeeEmail, employeeName, result, pipelineType
+  );
   const callbackResult = await hubspotCallback.reportOutcome(outcome);
 
-  // 8. Notify Slack with provisioning results
+  // 7. Notify Slack with results
   try {
     const succeeded = result.steps.filter(
       (s) => s.status === "success" || s.status === "dry_run"
     ).length;
     const failed = result.steps.filter((s) => s.status === "failed").length;
     const skipped = result.steps.filter((s) => s.status === "skipped").length;
-    const icon = result.success ? "â" : failed > 0 ? "â" : "â ï¸";
+    const icon = result.success ? "✅" : failed > 0 ? "❌" : "⚠️";
     const dryTag = config.dryRun ? " [DRY RUN]" : "";
     const duration = (result.durationMs / 1000).toFixed(1);
 
     const stepSummary = result.steps
       .map((s) => {
-        const sIcon = s.status === "success" || s.status === "dry_run" ? "â" : s.status === "failed" ? "â" : "â­ï¸";
+        const sIcon = s.status === "success" || s.status === "dry_run" ? "✅" : s.status === "failed" ? "❌" : "⏭️";
         const dry = s.status === "dry_run" ? " _(dry run)_" : "";
-        const err = s.error ? ` â ${s.error}` : "";
+        const err = s.error ? ` — ${s.error}` : "";
         return `  ${sIcon} ${s.name}${dry}${err}`;
       })
       .join("\n");
 
     await slack.postMessage(
       config.slackDeploymentsChannel,
-      `${icon} *Provisioning ${result.success ? "complete" : "failed"}*${dryTag}\n` +
+      `${icon} *${verb} ${result.success ? "complete" : "failed"}*${dryTag}\n` +
         `Employee: *${employeeName}* (${employeeEmail})\n` +
-        `HubSpot Ticket: #${ticketId} â ${callbackResult.stage === "unknown" ? "update failed" : "stage updated"}\n` +
+        `HubSpot Ticket: #${ticketId} → ${callbackResult.stage === "unknown" ? "update failed" : "stage updated"}\n` +
         `Run ID: ${result.runId} | Duration: ${duration}s\n` +
         `Steps: ${succeeded} succeeded, ${failed} failed, ${skipped} skipped\n\n` +
         stepSummary,
@@ -349,6 +369,7 @@ app.post("/webhook/hubspot", async (request, reply) => {
     {
       ticketId,
       runId: result.runId,
+      pipelineType,
       success: result.success,
       stage: callbackResult.stage,
       noteId: callbackResult.noteId,
@@ -358,6 +379,7 @@ app.post("/webhook/hubspot", async (request, reply) => {
 
   return {
     ticketId,
+    pipelineType,
     runId: result.runId,
     status: result.success ? "completed" : "failed",
     dryRun: result.dryRun,
@@ -371,14 +393,14 @@ app.post("/webhook/hubspot", async (request, reply) => {
   };
 });
 
-// âââ Startup ââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ─── Startup ────────────────────────────────────────────────────────
 
 const start = async () => {
   try {
     await initDatabase();
     logger.info("Database initialized");
   } catch (err) {
-    logger.warn({ err }, "Database init deferred â will retry on first request");
+    logger.warn({ err }, "Database init deferred — will retry on first request");
   }
 
   await app.listen({ port: config.port, host: "0.0.0.0" });
