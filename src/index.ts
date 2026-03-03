@@ -161,6 +161,7 @@ app.post<{
     acumaticaEmployeeClass: body.acumaticaEmployeeClass,
     acumaticaEmployeeId: body.acumaticaEmployeeId,
     zoomCallingPlanId: body.zoomCallingPlanId,
+    licenseTier: body.licenseTier,
     triggerSource: body.triggerSource ?? "manual",
   };
 
@@ -282,6 +283,7 @@ app.post("/webhook/hubspot", async (request, reply) => {
     jobTitle: ticket.employee_job_title,
     phone: ticket.employee_phone,
     githubUsername: ticket.employee_github_username,
+    licenseTier: (ticket as Record<string, string>).employee_license_tier as ProvisioningRequest["licenseTier"],
     triggerSource: "webhook",
   };
 
