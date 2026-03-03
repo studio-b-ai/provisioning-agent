@@ -72,6 +72,31 @@ async function graphFetch(
   return res.json();
 }
 
+// ─── Heritage Fabrics Tenant License Catalog ────────────────────────
+//
+// Discovered 2026-03-02 via Graph API subscribedSkus query.
+// Two-tier model:
+//   "standard"       → M365 Business Premium (full employee)
+//   "shared_mailbox"  → Exchange Online Plan 1 (functional mailboxes)
+//
+// Free/auto-assigned licenses (Power Automate Free, Power BI Free)
+// are handled by Entra group-based licensing — no explicit assignment needed.
+//
+export const LICENSE_SKUS = {
+  /** M365 Business Premium — 22 seats. Default for all employees. */
+  standard: {
+    skuId: "f245ecc8-75af-4f8e-b61f-27d8114de5f3",
+    displayName: "M365 Business Premium",
+  },
+  /** Exchange Online Plan 1 — 9 seats. For shared/functional mailboxes only. */
+  shared_mailbox: {
+    skuId: "4b9405b0-7788-4568-add1-99614e613b69",
+    displayName: "Exchange Online (Plan 1)",
+  },
+} as const;
+
+export type LicenseTier = keyof typeof LICENSE_SKUS;
+
 // ─── DRY_RUN aware methods ──────────────────────────────────────────
 
 export interface NewUser {
@@ -168,6 +193,27 @@ export async function revokeSignInSessions(userId: string): Promise<void> {
   }
 
   await graphFetch("POST", `/users/${userId}/revokeSignInSessions`);
+}
+
+/**
+ * Get the license SKU IDs currently assigned to a user.
+ * Used by offboarding to remove ALL licenses regardless of tier.
+ */
+export async function getUserLicenses(userId: string): Promise<string[]> {
+  if (!config.entraTenantId || !config.entraClientId) {
+    logger.info({ action: "getUserLicenses", userId, dryRun: true }, "[DRY RUN] Entra not configured — returning empty");
+    return [];
+  }
+
+  try {
+    const result = (await graphFetch("GET", `/users/${userId}?$select=assignedLicenses`)) as {
+      assignedLicenses?: Array<{ skuId: string }>;
+    };
+    return result.assignedLicenses?.map((l) => l.skuId) ?? [];
+  } catch (err) {
+    logger.warn({ err, userId }, "Failed to fetch user licenses");
+    return [];
+  }
 }
 
 export async function getUser(userPrincipalName: string): Promise<Record<string, unknown> | null> {

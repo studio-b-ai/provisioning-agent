@@ -42,16 +42,24 @@ export async function runOffboarding(req: ProvisioningRequest): Promise<Workflow
         return { sessionsRevoked: true };
       },
     },
-    // ─── Step 3: Remove M365 Licenses ────────────────────────────
+    // ─── Step 3: Remove ALL M365 Licenses ─────────────────────────
     {
       name: "Remove M365 licenses",
       order: 3,
       execute: async () => {
         const user = await graph.getUser(req.userEmail);
         if (user?.id) {
-          await graph.removeLicense(user.id as string, "05e9a617-0261-4cee-bb36-b41cc5a41ab6");
+          const userId = user.id as string;
+          // Query the user's actual assigned licenses instead of hardcoding
+          const assignedSkus = await graph.getUserLicenses(userId);
+          if (assignedSkus.length > 0) {
+            for (const skuId of assignedSkus) {
+              await graph.removeLicense(userId, skuId);
+            }
+          }
+          return { licensesRemoved: assignedSkus.length, skuIds: assignedSkus };
         }
-        return { licensesRemoved: true };
+        return { licensesRemoved: 0, note: "User not found in Entra" };
       },
       optional: true,
     },

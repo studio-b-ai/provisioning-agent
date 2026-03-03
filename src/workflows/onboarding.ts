@@ -1,6 +1,7 @@
 import pino from "pino";
 import { config } from "../lib/config.js";
 import * as graph from "../lib/graph.js";
+import { LICENSE_SKUS } from "../lib/graph.js";
 import * as github from "../lib/github-org.js";
 import * as slack from "../lib/slack.js";
 import * as hubspot from "../lib/hubspot.js";
@@ -46,9 +47,10 @@ export async function runOnboarding(req: ProvisioningRequest): Promise<WorkflowR
       order: 2,
       execute: async () => {
         const userId = entraUserId ?? "dry-run-user";
-        // M365 Business Basic SKU ID (placeholder — real SKU varies per tenant)
-        await graph.assignLicense(userId, "05e9a617-0261-4cee-bb36-b41cc5a41ab6");
-        return { license: "M365 Business Basic", userId };
+        const tier = req.licenseTier ?? "standard";
+        const sku = LICENSE_SKUS[tier];
+        await graph.assignLicense(userId, sku.skuId);
+        return { license: sku.displayName, tier, skuId: sku.skuId, userId };
       },
     },
     // ─── Step 3: Entra Security Groups ───────────────────────────

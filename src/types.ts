@@ -15,6 +15,13 @@ export interface ProvisioningRequest {
   acumaticaEmployeeClass?: string;
   /** Zoom calling plan ID (e.g., "200" for Zoom Phone Pro) */
   zoomCallingPlanId?: string;
+  /**
+   * M365 license tier to assign.
+   *   "standard"       → M365 Business Premium (default for employees)
+   *   "shared_mailbox"  → Exchange Online Plan 1 (functional mailboxes)
+   * Defaults to "standard" if omitted.
+   */
+  licenseTier?: "standard" | "shared_mailbox";
   /** Acumatica Employee ID — used for offboarding lookup */
   acumaticaEmployeeId?: string;
   triggerSource: "webhook" | "manual" | "api";
