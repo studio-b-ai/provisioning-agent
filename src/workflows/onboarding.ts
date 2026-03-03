@@ -86,10 +86,15 @@ export async function runOnboarding(req: ProvisioningRequest): Promise<WorkflowR
           }
         }
 
-        // Resolve entitlements from group membership
-        // (reads back what groups the user actually has — includes
-        //  groups added above plus any pre-existing memberships)
-        entitlements = await resolveEntitlements(userId);
+        // Resolve entitlements: if appEntitlements was explicitly passed
+        // in the request, use those directly (avoids Graph query on dry-run
+        // users that don't exist yet). Otherwise query actual group membership.
+        if (requestedApps.length > 0) {
+          entitlements = new Set(requestedApps as AppEntitlement[]);
+          logger.info({ entitlements: [...entitlements] }, "Using request-specified entitlements");
+        } else {
+          entitlements = await resolveEntitlements(userId);
+        }
 
         return {
           departmentGroups: deptGroups,
