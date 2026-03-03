@@ -22,6 +22,13 @@ export interface ProvisioningRequest {
    * Defaults to "standard" if omitted.
    */
   licenseTier?: "standard" | "shared_mailbox";
+  /**
+   * APP-* Entra groups to add the user to during onboarding.
+   * Drives which provisioning steps run (Steps 4-8).
+   * If omitted, user's existing group memberships are used.
+   * If no APP-* groups found at all, all apps are provisioned (backward-compatible).
+   */
+  appEntitlements?: Array<"acumatica" | "zoomPhone" | "github" | "slack" | "hubspot">;
   /** Acumatica Employee ID — used for offboarding lookup */
   acumaticaEmployeeId?: string;
   triggerSource: "webhook" | "manual" | "api";

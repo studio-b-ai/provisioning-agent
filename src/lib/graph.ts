@@ -97,6 +97,103 @@ export const LICENSE_SKUS = {
 
 export type LicenseTier = keyof typeof LICENSE_SKUS;
 
+// ─── App Entitlement Groups ─────────────────────────────────────────
+//
+// Entra ID security groups that drive which provisioning steps run.
+// User must be a member of the group for the corresponding app to be
+// provisioned. If no groups are assigned, ALL apps are provisioned
+// (backward-compatible default).
+//
+export const APP_GROUPS = {
+  acumatica: {
+    groupId: "0ab34edb-cafe-46b9-bf74-6c45be5d895b",
+    displayName: "APP-Acumatica",
+    provisioningStep: 4,
+  },
+  zoomPhone: {
+    groupId: "9704aa26-9ef9-41e0-aa14-72a187d5bfc1",
+    displayName: "APP-Zoom-Phone",
+    provisioningStep: 5,
+  },
+  github: {
+    groupId: "cdb53678-264c-415d-b305-73de98f3e946",
+    displayName: "APP-GitHub",
+    provisioningStep: 6,
+  },
+  slack: {
+    groupId: "615d58ac-220c-467e-995a-50ac7ee86ee4",
+    displayName: "APP-Slack",
+    provisioningStep: 7,
+  },
+  hubspot: {
+    groupId: "1ac6c0b9-1046-4474-8629-702189893529",
+    displayName: "APP-HubSpot",
+    provisioningStep: 8,
+  },
+} as const;
+
+export type AppEntitlement = keyof typeof APP_GROUPS;
+
+/**
+ * Resolve which apps a user is entitled to based on Entra group membership.
+ * Returns the set of APP_GROUPS keys the user has.
+ * If the user has NO APP-* groups, returns ALL apps (backward-compatible).
+ */
+export async function resolveEntitlements(userId: string): Promise<Set<AppEntitlement>> {
+  const allApps = new Set<AppEntitlement>(Object.keys(APP_GROUPS) as AppEntitlement[]);
+
+  if (config.dryRun && (!config.entraTenantId || !config.entraClientId)) {
+    logger.info({ action: "resolveEntitlements", userId, dryRun: true }, "[DRY RUN] Entra not configured — granting all apps");
+    return allApps;
+  }
+
+  try {
+    const memberOf = await getUserGroupIds(userId);
+    const appGroupIds = new Set(Object.values(APP_GROUPS).map((g) => g.groupId));
+    const matched = new Set<AppEntitlement>();
+
+    for (const [app, group] of Object.entries(APP_GROUPS)) {
+      if (memberOf.has(group.groupId)) {
+        matched.add(app as AppEntitlement);
+      }
+    }
+
+    // If user has zero APP-* groups, grant all (backward-compatible)
+    if (matched.size === 0) {
+      logger.info({ userId }, "No APP-* groups found — granting all apps (backward-compatible)");
+      return allApps;
+    }
+
+    logger.info(
+      { userId, entitled: [...matched], skipped: [...allApps].filter((a) => !matched.has(a)) },
+      "Resolved app entitlements from Entra groups"
+    );
+    return matched;
+  } catch (err) {
+    logger.warn({ err, userId }, "Failed to resolve entitlements — granting all apps as fallback");
+    return allApps;
+  }
+}
+
+/**
+ * Get the set of group IDs a user belongs to.
+ */
+export async function getUserGroupIds(userId: string): Promise<Set<string>> {
+  if (!config.entraTenantId || !config.entraClientId) {
+    return new Set();
+  }
+
+  try {
+    const result = (await graphFetch("POST", `/users/${userId}/getMemberObjects`, {
+      securityEnabledOnly: true,
+    })) as { value?: string[] };
+    return new Set(result.value ?? []);
+  } catch (err) {
+    logger.warn({ err, userId }, "Failed to fetch user group memberships");
+    return new Set();
+  }
+}
+
 // ─── DRY_RUN aware methods ──────────────────────────────────────────
 
 export interface NewUser {

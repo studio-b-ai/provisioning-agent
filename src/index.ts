@@ -162,6 +162,7 @@ app.post<{
     acumaticaEmployeeId: body.acumaticaEmployeeId,
     zoomCallingPlanId: body.zoomCallingPlanId,
     licenseTier: body.licenseTier,
+    appEntitlements: body.appEntitlements,
     triggerSource: body.triggerSource ?? "manual",
   };
 

@@ -1,7 +1,8 @@
 import pino from "pino";
 import { config } from "../lib/config.js";
 import * as graph from "../lib/graph.js";
-import { LICENSE_SKUS } from "../lib/graph.js";
+import { LICENSE_SKUS, APP_GROUPS, resolveEntitlements } from "../lib/graph.js";
+import type { AppEntitlement } from "../lib/graph.js";
 import * as github from "../lib/github-org.js";
 import * as slack from "../lib/slack.js";
 import * as hubspot from "../lib/hubspot.js";
@@ -18,8 +19,16 @@ export async function runOnboarding(req: ProvisioningRequest): Promise<WorkflowR
   const start = Date.now();
   const fullName = `${req.firstName} ${req.lastName}`;
 
-  // Track Entra user ID across steps (set by step 1, consumed by steps 2-3)
+  // Track Entra user ID across steps (set by step 1, consumed by steps 2+)
   let entraUserId: string | null = null;
+
+  // Resolved after Step 1 — determines which app steps (4-8) run
+  let entitlements: Set<AppEntitlement> | null = null;
+
+  /** Check if user is entitled to an app. Returns true if entitlements
+   *  haven't been resolved yet (backward-compatible). */
+  const entitled = (app: AppEntitlement): boolean =>
+    entitlements === null || entitlements.has(app);
 
   const steps: WorkflowStep[] = [
     // ─── Step 1: Entra ID (identity foundation) ──────────────────
@@ -53,25 +62,51 @@ export async function runOnboarding(req: ProvisioningRequest): Promise<WorkflowR
         return { license: sku.displayName, tier, skuId: sku.skuId, userId };
       },
     },
-    // ─── Step 3: Entra Security Groups ───────────────────────────
+    // ─── Step 3: Entra Security Groups + Entitlement Resolution ──
     {
       name: "Add to Entra security groups",
       order: 3,
       execute: async () => {
         const userId = entraUserId ?? "dry-run-user";
-        const groups = ["all-employees", req.department?.toLowerCase() ?? "general"];
-        for (const g of groups) {
+
+        // Add to department + all-employees groups
+        const deptGroups = ["all-employees", req.department?.toLowerCase() ?? "general"];
+        for (const g of deptGroups) {
           await graph.addToGroup(g, userId);
         }
-        return { groups };
+
+        // Add to APP-* entitlement groups specified in the request
+        const requestedApps = req.appEntitlements ?? [];
+        const addedAppGroups: string[] = [];
+        for (const app of requestedApps) {
+          const group = APP_GROUPS[app];
+          if (group) {
+            await graph.addToGroup(group.groupId, userId);
+            addedAppGroups.push(group.displayName);
+          }
+        }
+
+        // Resolve entitlements from group membership
+        // (reads back what groups the user actually has — includes
+        //  groups added above plus any pre-existing memberships)
+        entitlements = await resolveEntitlements(userId);
+
+        return {
+          departmentGroups: deptGroups,
+          appGroups: addedAppGroups,
+          entitlements: [...entitlements],
+        };
       },
       optional: true,
     },
-    // ─── Step 4: Acumatica Employee ──────────────────────────────
+    // ─── Step 4: Acumatica Employee (requires APP-Acumatica) ─────
     {
       name: "Create Acumatica Employee",
       order: 4,
       execute: async () => {
+        if (!entitled("acumatica")) {
+          return { skipped: true, reason: "User not in APP-Acumatica group" };
+        }
         const result = await acumatica.createEmployee({
           firstName: req.firstName,
           lastName: req.lastName,
@@ -89,11 +124,14 @@ export async function runOnboarding(req: ProvisioningRequest): Promise<WorkflowR
       },
       optional: true,
     },
-    // ─── Step 5: Zoom Phone ──────────────────────────────────────
+    // ─── Step 5: Zoom Phone (requires APP-Zoom-Phone) ────────────
     {
       name: "Provision Zoom Phone",
       order: 5,
       execute: async () => {
+        if (!entitled("zoomPhone")) {
+          return { skipped: true, reason: "User not in APP-Zoom-Phone group" };
+        }
         const result = await zoom.provisionPhoneUser(
           req.userEmail,
           req.zoomCallingPlanId
@@ -110,11 +148,14 @@ export async function runOnboarding(req: ProvisioningRequest): Promise<WorkflowR
       },
       optional: true,
     },
-    // ─── Step 6: GitHub Org ──────────────────────────────────────
+    // ─── Step 6: GitHub Org (requires APP-GitHub) ────────────────
     {
       name: "Invite to GitHub org",
       order: 6,
       execute: async () => {
+        if (!entitled("github")) {
+          return { skipped: true, reason: "User not in APP-GitHub group" };
+        }
         const sent = await github.inviteToOrg(req.userEmail);
         if (req.githubTeams?.length) {
           for (const team of req.githubTeams) {
@@ -125,11 +166,14 @@ export async function runOnboarding(req: ProvisioningRequest): Promise<WorkflowR
       },
       optional: true,
     },
-    // ─── Step 7: Slack ───────────────────────────────────────────
+    // ─── Step 7: Slack (requires APP-Slack) ──────────────────────
     {
       name: "Set up Slack account",
       order: 7,
       execute: async () => {
+        if (!entitled("slack")) {
+          return { skipped: true, reason: "User not in APP-Slack group" };
+        }
         logger.info({ email: req.userEmail }, "Slack user creation requires manual invitation or SCIM provisioning");
         if (req.slackChannels?.length) {
           const slackUserId = await slack.lookupUserByEmail(req.userEmail);
@@ -144,11 +188,14 @@ export async function runOnboarding(req: ProvisioningRequest): Promise<WorkflowR
       },
       optional: true,
     },
-    // ─── Step 8: HubSpot Contact ─────────────────────────────────
+    // ─── Step 8: HubSpot Contact (requires APP-HubSpot) ──────────
     {
       name: "Create HubSpot contact",
       order: 8,
       execute: async () => {
+        if (!entitled("hubspot")) {
+          return { skipped: true, reason: "User not in APP-HubSpot group" };
+        }
         const contactId = await hubspot.createContact(
           req.userEmail,
           req.firstName,
