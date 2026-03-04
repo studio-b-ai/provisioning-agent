@@ -9,6 +9,7 @@ export const config = {
 
   // Connections
   databaseUrl: process.env.DATABASE_URL,
+  redisUrl: process.env.REDIS_URL ?? "",
 
   // Microsoft Entra ID (Azure AD)
   entraClientId: process.env.ENTRA_CLIENT_ID ?? "",

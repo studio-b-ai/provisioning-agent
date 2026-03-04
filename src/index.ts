@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { Redis } from "ioredis";
 import pino from "pino";
 import { config } from "./lib/config.js";
 import { initDatabase, getPool } from "./lib/db.js";
@@ -8,6 +9,7 @@ import * as slack from "./lib/slack.js";
 import * as hubspot from "./lib/hubspot.js";
 import * as hubspotCallback from "./lib/hubspot-callback.js";
 import * as acumatica from "./lib/acumatica.js";
+import { initAcumaticaGate } from "./lib/acumatica.js";
 import * as zoom from "./lib/zoom.js";
 import { runOnboarding } from "./workflows/onboarding.js";
 import { runOffboarding } from "./workflows/offboarding.js";
@@ -406,6 +408,20 @@ const start = async () => {
     logger.warn({ err }, "Database init deferred — will retry on first request");
   }
 
+  // Initialize session gate for Acumatica API coordination
+  if (config.redisUrl) {
+    try {
+      const redis = new Redis(config.redisUrl, { maxRetriesPerRequest: 3 });
+      redis.on("error", (err: Error) => logger.warn({ err: err.message }, "Session gate Redis error"));
+      initAcumaticaGate(redis);
+      logger.info("Acumatica session gate initialized");
+    } catch (err) {
+      logger.warn({ err }, "Session gate init failed — operating without coordination");
+    }
+  } else {
+    logger.warn("REDIS_URL not set — Acumatica session gate disabled");
+  }
+
   await app.listen({ port: config.port, host: "0.0.0.0" });
   logger.info(
     { port: config.port, dryRun: config.dryRun },
@@ -416,4 +432,15 @@ const start = async () => {
 start().catch((err) => {
   logger.error({ err }, "Startup failed");
   process.exit(1);
+
+});
+
+process.on("SIGTERM", () => {
+  logger.info("SIGTERM received, shutting down");
+  app.close().then(() => process.exit(0));
+});
+
+process.on("SIGINT", () => {
+  logger.info("SIGINT received, shutting down");
+  app.close().then(() => process.exit(0));
 });
