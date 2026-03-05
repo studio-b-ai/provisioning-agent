@@ -25,12 +25,9 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 5
     steps:
-      - name: Wait for Railway deploy
-        run: sleep 90
-
-      - name: Health check
+      - name: Health check with retry
         env:
           SERVICE_URL: ${{ secrets.SERVICE_URL }}
         run: |
@@ -38,10 +35,15 @@ jobs:
             echo "::warning::SERVICE_URL secret not set — skipping smoke test"
             exit 0
           fi
-          echo "Checking ${SERVICE_URL}/health ..."
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "${SERVICE_URL}/health" || echo "000")
-          if [ "$STATUS" != "200" ]; then
-            echo "::error::Health check failed (HTTP ${STATUS})"
-            exit 1
-          fi
-          echo "Health check passed (HTTP ${STATUS})"
+          echo "Waiting for Railway deploy (checking every 10s for up to 3 min)..."
+          for i in $(seq 1 18); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${SERVICE_URL}/health" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Health check passed after $((i*10))s (HTTP ${STATUS})"
+              exit 0
+            fi
+            echo "Attempt ${i}/18: HTTP ${STATUS} — retrying in 10s..."
+            sleep 10
+          done
+          echo "::error::Health check failed after 180s"
+          exit 1
