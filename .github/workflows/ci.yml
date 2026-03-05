@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: TypeScript Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+
+  smoke:
+    name: Post-Deploy Smoke
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Wait for Railway deploy
+        run: sleep 90
+
+      - name: Health check
+        env:
+          SERVICE_URL: ${{ secrets.SERVICE_URL }}
+        run: |
+          if [ -z "${SERVICE_URL}" ]; then
+            echo "::warning::SERVICE_URL secret not set — skipping smoke test"
+            exit 0
+          fi
+          echo "Checking ${SERVICE_URL}/health ..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "${SERVICE_URL}/health" || echo "000")
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::Health check failed (HTTP ${STATUS})"
+            exit 1
+          fi
+          echo "Health check passed (HTTP ${STATUS})"
