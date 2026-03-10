@@ -61,15 +61,17 @@ jobs:
     steps:
       - name: Post to Slack
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
         run: |
-          if [ -z "${SLACK_WEBHOOK_URL}" ]; then
-            echo "::warning::SLACK_WEBHOOK_URL not set — skipping notification"
+          if [ -z "${SLACK_BOT_TOKEN}" ]; then
+            echo "::warning::SLACK_BOT_TOKEN not set — skipping notification"
             exit 0
           fi
-          curl -s -X POST "${SLACK_WEBHOOK_URL}" \
-            -H 'Content-Type: application/json' \
+          curl -s -X POST "https://slack.com/api/chat.postMessage" \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-Type: application/json" \
             -d "{
+              \"channel\": \"C0AHK777EQL\",
               \"text\": \":red_circle: *CI Failed* — \`${{ github.repository }}\` on \`main\`\",
               \"blocks\": [
                 {
