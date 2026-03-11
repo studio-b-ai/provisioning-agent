@@ -1,8 +1,9 @@
 import pino from "pino";
 import { config } from "../lib/config.js";
 import * as graph from "../lib/graph.js";
-import { LICENSE_SKUS, APP_GROUPS, resolveEntitlements } from "../lib/graph.js";
+import { LICENSE_SKUS, APP_GROUPS } from "../lib/graph.js";
 import type { AppEntitlement } from "../lib/graph.js";
+import { resolveFromDepartment } from "../lib/role-entitlements.js";
 import * as github from "../lib/github-org.js";
 import * as slack from "../lib/slack.js";
 import * as hubspot from "../lib/hubspot.js";
@@ -22,13 +23,22 @@ export async function runOnboarding(req: ProvisioningRequest): Promise<WorkflowR
   // Track Entra user ID across steps (set by step 1, consumed by steps 2+)
   let entraUserId: string | null = null;
 
-  // Resolved after Step 1 — determines which app steps (4-8) run
-  let entitlements: Set<AppEntitlement> | null = null;
+  // Resolve entitlements from department matrix (or explicit overrides)
+  const resolved = resolveFromDepartment(
+    req.department,
+    req.appEntitlements,
+    req.licenseTier
+  );
+  logger.info(
+    { source: resolved.source, tier: resolved.licenseTier, apps: resolved.apps, reason: resolved.reason },
+    "Entitlements resolved"
+  );
 
-  /** Check if user is entitled to an app. Returns true if entitlements
-   *  haven't been resolved yet (backward-compatible). */
-  const entitled = (app: AppEntitlement): boolean =>
-    entitlements === null || entitlements.has(app);
+  // Entitlement set — drives which app steps (4-8) run
+  const entitlements = new Set<AppEntitlement>(resolved.apps);
+
+  /** Check if user is entitled to an app. */
+  const entitled = (app: AppEntitlement): boolean => entitlements.has(app);
 
   const steps: WorkflowStep[] = [
     // ─── Step 1: Entra ID (identity foundation) ──────────────────
@@ -56,10 +66,16 @@ export async function runOnboarding(req: ProvisioningRequest): Promise<WorkflowR
       order: 2,
       execute: async () => {
         const userId = entraUserId ?? "dry-run-user";
-        const tier = req.licenseTier ?? "standard";
+        const tier = resolved.licenseTier;
         const sku = LICENSE_SKUS[tier];
         await graph.assignLicense(userId, sku.skuId);
-        return { license: sku.displayName, tier, skuId: sku.skuId, userId };
+        return {
+          license: sku.displayName,
+          tier,
+          skuId: sku.skuId,
+          userId,
+          resolvedFrom: resolved.source,
+        };
       },
     },
     // ─── Step 3: Entra Security Groups + Entitlement Resolution ──
@@ -75,31 +91,22 @@ export async function runOnboarding(req: ProvisioningRequest): Promise<WorkflowR
           await graph.addToGroup(g, userId);
         }
 
-        // Add to APP-* entitlement groups specified in the request
-        const requestedApps = req.appEntitlements ?? [];
+        // Add to APP-* entitlement groups based on resolved entitlements
         const addedAppGroups: string[] = [];
-        for (const app of requestedApps) {
-          const group = APP_GROUPS[app];
+        for (const app of resolved.apps) {
+          const group = APP_GROUPS[app as keyof typeof APP_GROUPS];
           if (group) {
             await graph.addToGroup(group.groupId, userId);
             addedAppGroups.push(group.displayName);
           }
         }
 
-        // Resolve entitlements: if appEntitlements was explicitly passed
-        // in the request, use those directly (avoids Graph query on dry-run
-        // users that don't exist yet). Otherwise query actual group membership.
-        if (requestedApps.length > 0) {
-          entitlements = new Set(requestedApps as AppEntitlement[]);
-          logger.info({ entitlements: [...entitlements] }, "Using request-specified entitlements");
-        } else {
-          entitlements = await resolveEntitlements(userId);
-        }
-
         return {
           departmentGroups: deptGroups,
           appGroups: addedAppGroups,
-          entitlements: [...entitlements],
+          entitlements: resolved.apps,
+          entitlementSource: resolved.source,
+          entitlementReason: resolved.reason,
         };
       },
       optional: true,

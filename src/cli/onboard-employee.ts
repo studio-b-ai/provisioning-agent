@@ -49,6 +49,10 @@ const { values: args } = parseArgs({
     // Zoom
     "zoom-plan": { type: "string" },
 
+    // Entitlement overrides
+    "license-tier": { type: "string" }, // "standard" or "shared_mailbox"
+    entitlements: { type: "string" }, // comma-separated app list
+
     // Config file (alternative to flags)
     config: { type: "string" },
 
@@ -108,6 +112,17 @@ ACUMATICA:
 ZOOM:
   --zoom-plan <id>    Calling plan ID (e.g., "200" for Zoom Phone Pro)
 
+ENTITLEMENT OVERRIDES:
+  --license-tier <t>  M365 license: "standard" (Business Premium) or "shared_mailbox" (Exchange Plan 1)
+  --entitlements <a>  Comma-separated apps: acumatica,zoomPhone,github,slack,hubspot
+                      If omitted, resolved from department via entitlement matrix:
+                        ADMIN     → standard + all 5 apps
+                        SALES     → standard + hubspot,zoomPhone,slack
+                        WAREHOUSE → shared_mailbox + no apps
+                        DESIGN    → standard + acumatica,slack,hubspot
+                        FINANCE   → standard + acumatica,slack,hubspot
+                      Unknown/missing department → standard + all apps (backward-compatible)
+
 CONFIG:
   --config <file>     YAML config file (alternative to flags)
 
@@ -127,6 +142,16 @@ EXAMPLES:
   # Live offboard
   npx tsx src/cli/onboard-employee.ts --offboard --live \\
     --email jane@heritagefabrics.com --first Jane --last Smith
+
+  # Warehouse employee (auto: shared_mailbox, no apps)
+  npx tsx src/cli/onboard-employee.ts --onboard \\
+    --email wayne@heritagefabrics.com --first Wayne --last Ober \\
+    --department WAREHOUSE
+
+  # Override: warehouse employee with standard license
+  npx tsx src/cli/onboard-employee.ts --onboard \\
+    --email wayne@heritagefabrics.com --first Wayne --last Ober \\
+    --department WAREHOUSE --license-tier standard
 
   # Validate employee exists in all systems
   npx tsx src/cli/onboard-employee.ts --validate \\
@@ -151,6 +176,8 @@ interface EmployeeConfig {
   acumaticaEmployeeClass?: string;
   acumaticaEmployeeId?: string;
   zoomCallingPlanId?: string;
+  licenseTier?: "standard" | "shared_mailbox";
+  appEntitlements?: string[];
 }
 
 /** Type-safe string accessor for parseArgs values */
@@ -194,6 +221,8 @@ function loadConfig(): EmployeeConfig {
       acumaticaEmployeeClass: parsed.acumaticaEmployeeClass ?? parsed["acumatica-class"],
       acumaticaEmployeeId: parsed.acumaticaEmployeeId ?? parsed["acumatica-employee-id"],
       zoomCallingPlanId: parsed.zoomCallingPlanId ?? parsed["zoom-plan"],
+      licenseTier: (parsed.licenseTier ?? parsed["license-tier"]) as EmployeeConfig["licenseTier"],
+      appEntitlements: (parsed.appEntitlements ?? parsed.entitlements)?.split(",").map((s) => s.trim()),
     };
   }
 
@@ -211,6 +240,8 @@ function loadConfig(): EmployeeConfig {
     acumaticaEmployeeClass: str(args["acumatica-class"]),
     acumaticaEmployeeId: str(args["acumatica-employee-id"]),
     zoomCallingPlanId: str(args["zoom-plan"]),
+    licenseTier: str(args["license-tier"]) as EmployeeConfig["licenseTier"],
+    appEntitlements: csvList(args.entitlements),
   };
 }
 
@@ -251,6 +282,8 @@ async function executeRemote(
     acumaticaEmployeeClass: emp.acumaticaEmployeeClass,
     acumaticaEmployeeId: emp.acumaticaEmployeeId,
     zoomCallingPlanId: emp.zoomCallingPlanId,
+    licenseTier: emp.licenseTier,
+    appEntitlements: emp.appEntitlements,
     triggerSource: "manual" as const,
   };
 

@@ -412,6 +412,7 @@ export async function getTicket(
           "employee_github_username",
           // Onboarding-specific
           "employee_start_date",
+          "employee_license_tier",
           // Offboarding-specific
           "offboarding_reason",
           "employee_last_day",
